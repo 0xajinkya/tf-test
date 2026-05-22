@@ -13,10 +13,14 @@ RATE_LIMIT_PER_MINUTE="${rate_limit_per_minute}"
 dnf -y update
 dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip
 
-if ! command -v node >/dev/null 2>&1; then
-  dnf -y --allowerasing install nodejs20 npm
-  alternatives --install /usr/bin/node node /usr/bin/node-20 90 || true
+# AL2023's generic `npm` package depends on nodejs (v18) and overrides nodejs20.
+# Install nodejs20 + nodejs20-npm and symlink the v20 binaries into /usr/local.
+if ! node --version 2>/dev/null | grep -q '^v20'; then
+  dnf -y --allowerasing install nodejs20 nodejs20-npm
+  ln -sf /usr/bin/node-20 /usr/local/bin/node
+  ln -sf /usr/bin/npm-20  /usr/local/bin/npm
 fi
+node --version | grep -q '^v20' || { echo "Node 20 install failed"; exit 1; }
 
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
   curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
@@ -92,7 +96,7 @@ User=iii
 Group=iii
 EnvironmentFile=/etc/iii/caller-worker.env
 WorkingDirectory=/opt/iii/current
-ExecStart=/usr/bin/node dist/index.js
+ExecStart=/usr/local/bin/node dist/index.js
 StandardOutput=append:/var/log/iii/caller-worker.log
 StandardError=append:/var/log/iii/caller-worker.log
 Restart=on-failure

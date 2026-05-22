@@ -114,6 +114,7 @@ Per-key rate limit defaults to 60 req/min (token bucket). Tune via `var.rate_lim
 
 | File | Purpose |
 |------|---------|
+| [docs/SETUP.md](docs/SETUP.md) | **Start here** — zero-to-running guide for a fresh AWS account |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Network, IAM, data flow |
 | [docs/API.md](docs/API.md) | Public JSON contract |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Deploy, redeploy, rollback, debug |

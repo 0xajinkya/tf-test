@@ -9,7 +9,7 @@ User=iii
 Group=iii
 EnvironmentFile=/etc/iii/caller-worker.env
 WorkingDirectory=/opt/iii/current
-ExecStart=/usr/bin/node dist/index.js
+ExecStart=/usr/local/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5
 

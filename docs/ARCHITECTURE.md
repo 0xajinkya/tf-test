@@ -23,16 +23,17 @@ Each worker opens an outbound WebSocket to the engine and registers iii **functi
 
 ```
 sg-gateway:
-  ingress: tcp/80 from 0.0.0.0/0
-  egress:  tcp/9000 to sg-engine
+  ingress: tcp/80   from 0.0.0.0/0
+  egress:  tcp/3111 to sg-engine, tcp/443 to 0.0.0.0/0 (NAT, package install)
 
 sg-engine:
-  ingress: tcp/9000 from sg-gateway, sg-caller, sg-inference
-  egress:  none (deny by default; only NAT for package updates during user-data)
+  ingress: tcp/3111  from sg-gateway
+           tcp/49134 from sg-worker
+  egress:  tcp/443  to 0.0.0.0/0 (NAT, iii install + package updates)
 
-sg-caller, sg-inference:
+sg-worker:
   ingress: none
-  egress:  tcp/9000 to sg-engine, tcp/443 to 0.0.0.0/0 (NAT, for package install)
+  egress:  tcp/49134 to sg-engine, tcp/443 to 0.0.0.0/0
 ```
 
 ## IAM
@@ -43,21 +44,26 @@ sg-caller, sg-inference:
 ## Data flow
 
 ```
-client ──HTTP POST /v1/chat/completions──▶ gateway:80
+client ──HTTP POST /v1/chat/completions──▶ nginx :80 (gateway VM)
                                             │
                                             ▼
-                                  forwards request to iii engine via WS
+                                  proxy_pass → engine :3111 (iii-http)
                                             │
                                             ▼
-                            engine selects worker that registered
-                            capability `inference::run_inference`
+                                  engine dispatches HTTP trigger to function
+                                  `caller.chat_proxy` (registered by caller-worker)
                                             │
-                            ┌───────────────┴───────────────┐
-                            ▼                               ▼
-                  caller-worker (orchestration)   inference-worker (model)
+                            caller validates X-API-Key, rate-limits, logs
+                                            │
+                                            ▼
+                                  iii.trigger("inference.chat", payload)
+                                            │
+                                            ▼
+                                  inference-worker runs llama.cpp, returns
+                                            │
+                                            ▼
+                                  caller returns -> iii-http -> nginx -> client
 ```
-
-Note: `caller-worker` exists per the upstream tutorial pattern. In this deployment it is used for request shaping / batching hooks; if not needed it can be removed by setting `enable_caller_worker = false` in `terraform.tfvars`.
 
 ## Observability
 

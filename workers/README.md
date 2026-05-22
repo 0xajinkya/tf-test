@@ -2,20 +2,22 @@
 
 Two reference workers ship in this repo:
 
-| Worker | Language | Capability |
-|--------|----------|------------|
-| `inference-worker` | Python 3.11 | `inference::run_inference` |
-| `caller-worker`    | TypeScript / Node 20 | `caller::dispatch` |
+| Worker | Language | iii function ID |
+|--------|----------|-----------------|
+| `inference-worker` | Python 3.11 + llama.cpp | `inference.chat` |
+| `caller-worker`    | TypeScript / Node 20 | `caller.chat_proxy` (HTTP trigger: `POST /v1/chat/completions`) |
 
-Both are **stubs**: they speak the iii engine WebSocket protocol but the
-`run_inference` / `dispatch` handlers return deterministic synthetic data.
-Swap them for real implementations:
+Both use the official iii SDKs (`iii-sdk` for Python via PyPI name `iii-sdk` →
+imports as `iii`; `iii-sdk` for Node).
 
-- `inference-worker`: replace `inference_worker.main.run_inference` with a
-  call into llama.cpp, vLLM, an OpenAI-compatible upstream, etc.
-- `caller-worker`: replace `dispatch` with whatever orchestration logic
-  the gateway should run before the inference hop (auth, rate limiting,
-  prompt shaping, batching).
+- `inference-worker`: lazy-loads a GGUF model via `llama-cpp-python` and
+  exposes `inference.chat` (OpenAI chat-completion shape). Default model:
+  TinyLlama 1.1B Q4_K_M, downloaded in cloud-init. Swap by changing
+  `var.gguf_model_url`.
+- `caller-worker`: registers `caller.chat_proxy` + an HTTP trigger at
+  `POST /v1/chat/completions`. Validates `X-API-Key` (from SSM
+  `/iii/api_keys`), applies a per-key token-bucket rate limit, emits
+  structured JSON logs, forwards to `inference.chat` via the engine.
 
 The artifact format the deploy expects: a tarball whose root is the
 release directory. Build locally with:
