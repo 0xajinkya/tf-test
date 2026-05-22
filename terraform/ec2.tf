@@ -1,17 +1,3 @@
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
-
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
-  }
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-}
-
 data "aws_ami" "al2023" {
   most_recent = true
   owners      = ["137112412989"] # Amazon
@@ -37,12 +23,14 @@ locals {
 
 # ---------- Gateway (public) ----------
 resource "aws_instance" "gateway" {
-  ami                         = data.aws_ami.ubuntu.id
+  ami                         = data.aws_ami.al2023.id
   instance_type               = var.instance_types.gateway
   subnet_id                   = aws_subnet.public[var.azs[0]].id
   vpc_security_group_ids      = [aws_security_group.gateway.id]
   iam_instance_profile        = aws_iam_instance_profile.vm.name
   associate_public_ip_address = true
+
+  user_data_replace_on_change = true
 
   metadata_options {
     http_tokens                 = "required"
@@ -79,6 +67,8 @@ resource "aws_instance" "engine" {
   vpc_security_group_ids = [aws_security_group.engine.id]
   iam_instance_profile   = aws_iam_instance_profile.vm.name
 
+  user_data_replace_on_change = true
+
   metadata_options {
     http_tokens                 = "required"
     http_endpoint               = "enabled"
@@ -111,6 +101,8 @@ resource "aws_instance" "inference_worker" {
   subnet_id              = aws_subnet.private[var.azs[0]].id
   vpc_security_group_ids = [aws_security_group.worker.id]
   iam_instance_profile   = aws_iam_instance_profile.vm.name
+
+  user_data_replace_on_change = true
 
   metadata_options {
     http_tokens                 = "required"
@@ -147,6 +139,8 @@ resource "aws_instance" "caller_worker" {
   subnet_id              = aws_subnet.private[var.azs[1 % length(var.azs)]].id
   vpc_security_group_ids = [aws_security_group.worker.id]
   iam_instance_profile   = aws_iam_instance_profile.vm.name
+
+  user_data_replace_on_change = true
 
   metadata_options {
     http_tokens                 = "required"

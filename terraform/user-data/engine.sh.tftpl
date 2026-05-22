@@ -9,7 +9,7 @@ ARTIFACT_BUCKET="${artifact_bucket}"
 RELEASE="${release}"
 
 dnf -y update
-dnf -y install ca-certificates curl unzip jq rsync tar gzip
+dnf -y install ca-certificates unzip jq rsync tar gzip
 # awscli v2 preinstalled on AL2023; CloudWatch agent installed below.
 
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
@@ -26,11 +26,20 @@ cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
   "logs": {
     "logs_collected": {
-      "journald": {
-        "logs_collected": [
-          { "unit": "iii-$${ROLE}.service",
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/iii/$${ROLE}.log",
             "log_group_name": "/$${PROJECT}/$${ROLE}",
-            "log_stream_name": "{instance_id}" }
+            "log_stream_name": "{instance_id}",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/iii-userdata.log",
+            "log_group_name": "/$${PROJECT}/userdata",
+            "log_stream_name": "{instance_id}-$${ROLE}",
+            "timezone": "UTC"
+          }
         ]
       }
     }
@@ -76,6 +85,8 @@ Type=simple
 User=iii
 Group=iii
 ExecStart=/opt/iii/current/bin/iii-engine --config /etc/iii/engine.yaml
+StandardOutput=append:/var/log/iii/engine.log
+StandardError=append:/var/log/iii/engine.log
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

@@ -1,8 +1,11 @@
-project_name  = "iii"
-environment   = "prod"
-region        = "us-east-1"
-github_repo   = "OWNER/REPO"
-github_branch = "main"
+project_name = "iii"
+environment  = "prod"
+region       = "us-east-1"
+github_repo  = "OWNER/REPO"
+
+# Enable stage later by adding "dev" + "stage" to these lists.
+github_branches     = ["main"]
+github_environments = ["prod"]
 
 # Lock down before going live.
 allowed_ingress_cidrs = ["0.0.0.0/0"]

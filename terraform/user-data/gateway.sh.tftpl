@@ -9,17 +9,17 @@ ARTIFACT_BUCKET="${artifact_bucket}"
 RELEASE="${release}"
 ENGINE_ENDPOINT="${engine_endpoint}"
 
-apt-get update -y
-apt-get install -y --no-install-recommends \
-  ca-certificates curl unzip jq awscli rsync python3 python3-venv collectd
+dnf -y update
+dnf -y install ca-certificates unzip jq rsync tar gzip python3 python3-pip
+# awscli v2 preinstalled on AL2023.
 
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
-  curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb" \
-    -o /tmp/cwagent.deb
-  dpkg -i /tmp/cwagent.deb
+  curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
+    -o /tmp/cwagent.rpm
+  rpm -U /tmp/cwagent.rpm
 fi
 
-id iii >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d /opt/iii iii
+id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
 install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii
 
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
@@ -27,11 +27,20 @@ cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
   "logs": {
     "logs_collected": {
-      "journald": {
-        "logs_collected": [
-          { "unit": "iii-$${ROLE}.service",
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/iii/$${ROLE}.log",
             "log_group_name": "/$${PROJECT}/$${ROLE}",
-            "log_stream_name": "{instance_id}" }
+            "log_stream_name": "{instance_id}",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/iii-userdata.log",
+            "log_group_name": "/$${PROJECT}/userdata",
+            "log_stream_name": "{instance_id}-$${ROLE}",
+            "timezone": "UTC"
+          }
         ]
       }
     }
@@ -49,7 +58,6 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
-# Pull artifact (best-effort; first deploy after apply populates the bucket)
 mkdir -p "/opt/iii/releases/$${RELEASE}"
 if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/gateway.tar.gz" /tmp/gateway.tar.gz 2>/dev/null; then
   tar -xzf /tmp/gateway.tar.gz -C "/opt/iii/releases/$${RELEASE}"
@@ -68,7 +76,6 @@ metrics:
   bind: 127.0.0.1:9100
 YAML
 
-# Use unit from artifact if present, otherwise install minimal one
 if [ -f /opt/iii/current/systemd/iii-gateway.service ]; then
   install -m 0644 /opt/iii/current/systemd/iii-gateway.service /etc/systemd/system/iii-gateway.service
 else
@@ -84,6 +91,8 @@ User=iii
 Group=iii
 EnvironmentFile=-/etc/iii/gateway.env
 ExecStart=/opt/iii/current/bin/iii-http --config /etc/iii/gateway.yaml
+StandardOutput=append:/var/log/iii/gateway.log
+StandardError=append:/var/log/iii/gateway.log
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

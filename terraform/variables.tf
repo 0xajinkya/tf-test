@@ -61,10 +61,16 @@ variable "github_repo" {
   type        = string
 }
 
-variable "github_branch" {
-  description = "Branch ref that the OIDC trust is scoped to."
-  type        = string
-  default     = "main"
+variable "github_branches" {
+  description = "Branch refs allowed to assume the deploy role via OIDC. Add 'dev' when enabling stage."
+  type        = list(string)
+  default     = ["main"]
+}
+
+variable "github_environments" {
+  description = "GitHub Environments allowed to assume the deploy role via OIDC. Add 'stage' when enabling stage."
+  type        = list(string)
+  default     = ["prod"]
 }
 
 variable "iii_release" {

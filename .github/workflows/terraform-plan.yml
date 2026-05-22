@@ -45,7 +45,6 @@ jobs:
       - run: |
           terraform plan -no-color \
             -var "github_repo=${{ github.repository }}" \
-            -var "github_branch=main" \
             | tee /tmp/plan.txt
 
       - uses: actions/github-script@v7

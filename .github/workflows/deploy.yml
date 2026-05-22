@@ -8,6 +8,7 @@ name: deploy
 # role intentionally lacks broad ec2/iam permissions; see docs/HARDENING.md.
 
 on:
+  # main -> prod. Add 'dev' here when enabling stage.
   push:
     branches: [main]
   workflow_dispatch:
@@ -75,7 +76,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    environment: prod
+    # main -> prod, dev -> stage. Ternary already wired; just create the
+    # 'stage' GitHub Environment and add 'dev' to triggers above to activate.
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'stage' }}
     steps:
       - uses: actions/download-artifact@v4
         with:

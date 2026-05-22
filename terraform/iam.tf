@@ -72,7 +72,10 @@ data "aws_iam_policy_document" "github_oidc_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/${var.github_branch}"]
+      values = concat(
+        [for b in var.github_branches : "repo:${var.github_repo}:ref:refs/heads/${b}"],
+        [for e in var.github_environments : "repo:${var.github_repo}:environment:${e}"],
+      )
     }
   }
 }
