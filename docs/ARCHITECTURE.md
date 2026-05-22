@@ -4,12 +4,12 @@
 
 | Service | Host | Runtime | Port | Reachable from |
 |---------|------|---------|------|----------------|
-| iii API gateway (`iii-http`) | EC2 in **public** subnet | binary, systemd | `:80` (HTTP) | Internet 0.0.0.0/0 |
-| iii engine | EC2 in **private** subnet | binary, systemd | `:9000` (WebSocket) | gateway SG, worker SGs |
+| nginx (reverse proxy) | EC2 in **public** subnet | systemd | `:80` (HTTP) | Internet 0.0.0.0/0 |
+| iii engine + `iii-http` | EC2 in **private** subnet | `iii -c engine.yaml`, systemd | `:49134` (WS), `:3111` (HTTP) | gateway SG (3111), worker SGs (49134) |
 | caller-worker | EC2 in **private** subnet | Node 20, systemd | (egress WS only) | — |
-| inference-worker | EC2 in **private** subnet | Python 3.11, systemd | (egress WS only) | — |
+| inference-worker | EC2 in **private** subnet | Python 3.11 + llama.cpp, systemd | (egress WS only) | — |
 
-Each worker holds an outbound WebSocket connection to the engine. The gateway accepts HTTP, forwards into the engine via WS, the engine dispatches to a registered worker capability.
+Each worker opens an outbound WebSocket to the engine and registers iii **functions** (`inference.chat`, `caller.chat_proxy`). nginx forwards `:80 → engine:3111`. `iii-http` (bundled in the engine process) dispatches HTTP triggers to the registered functions.
 
 ## Network
 

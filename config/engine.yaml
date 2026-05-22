@@ -1,21 +1,32 @@
-# iii engine config rendered into /etc/iii/engine.yaml by user-data.
-# Authoritative copy: terraform/user-data/engine.sh.tftpl. This file
-# is for reference / diffing only.
-engine:
-  port: 49134
-  host: 0.0.0.0
-
+# iii engine config — rendered into /etc/iii/engine.yaml by user-data.
+# Authoritative copy lives in terraform/user-data/engine.sh.tftpl.
 workers:
+  - name: iii-worker-manager
+    config:
+      host: 0.0.0.0
+      port: 49134
+
   - name: iii-http
     config:
       host: 0.0.0.0
       port: 3111
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins: ['*']
+        allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
 
   - name: iii-state
     config:
-      adapter: file
-      path: /var/lib/iii/state
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /var/lib/iii/state_store.db
 
-observability:
-  console: true
-  in_memory: true
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii
+      exporter: memory
+      sampling_ratio: 1.0

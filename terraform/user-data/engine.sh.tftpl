@@ -47,27 +47,40 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
-# iii engine config: engine on :49134 (WS, all interfaces), iii-http on :3111 (HTTP).
-# file-based adapter — single VM, fine for demo; swap to Redis for HA.
+# iii engine config (schema: top-level `workers:` only; engine WS port is set
+# inside the iii-worker-manager worker). iii-http exposes the JSON HTTP API on
+# :3111. State persists to disk via the kv/file_based adapter.
 cat >/etc/iii/engine.yaml <<YAML
-engine:
-  port: 49134
-  host: 0.0.0.0
-
 workers:
+  - name: iii-worker-manager
+    config:
+      host: 0.0.0.0
+      port: 49134
+
   - name: iii-http
     config:
       host: 0.0.0.0
       port: 3111
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins: ['*']
+        allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
 
   - name: iii-state
     config:
-      adapter: file
-      path: /var/lib/iii/state
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /var/lib/iii/state_store.db
 
-observability:
-  console: true
-  in_memory: true
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: iii
+      exporter: memory
+      sampling_ratio: 1.0
 YAML
 chown -R iii:iii /etc/iii /var/lib/iii
 

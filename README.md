@@ -19,7 +19,8 @@ Reproducible deployment of an iii engine + workers behind a public JSON API on A
                           │ Private subnet      │
                           │  ┌───────────────┐  │
                           │  │ iii Engine    │  │  EC2 t3.small
-                          │  │ ws :9000      │  │  systemd: iii-engine
+                          │  │ ws :49134     │  │  systemd: iii-engine
+                          │  │ http :3111    │  │  (iii-http worker)
                           │  └──────┬────────┘  │
                           │  ┌──────┴────────┐  │
                           │  │ caller-worker │  │  EC2 t3.small (TS, Node 20)
