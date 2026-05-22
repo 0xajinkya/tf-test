@@ -1,0 +1,19 @@
+project_name  = "iii"
+environment   = "prod"
+region        = "us-east-1"
+github_repo   = "OWNER/REPO"
+github_branch = "main"
+
+# Lock down before going live.
+allowed_ingress_cidrs = ["0.0.0.0/0"]
+
+# Cost-optimised defaults; bump inference_worker before plugging in a real model.
+instance_types = {
+  gateway          = "t3.small"
+  engine           = "t3.small"
+  caller_worker    = "t3.small"
+  inference_worker = "t3.large"
+}
+
+enable_caller_worker = true
+iii_release          = "main"

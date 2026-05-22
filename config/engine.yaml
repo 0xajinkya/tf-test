@@ -1,0 +1,18 @@
+# iii engine config — rendered into /etc/iii/engine.yaml on the engine VM.
+#
+# NOTE: The schema below is illustrative. Validate against the iii engine
+# release you actually deploy and adjust keys to match upstream.
+listen: 0.0.0.0:9000
+
+observability:
+  console: true
+  in_memory: true
+
+auth:
+  # "trust_network" relies on SG membership for trust. In a production deployment
+  # this should be replaced with mTLS — see docs/HARDENING.md.
+  mode: trust_network
+
+limits:
+  max_message_bytes: 1048576
+  max_inflight_per_worker: 8

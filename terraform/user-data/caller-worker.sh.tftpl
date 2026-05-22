@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec > >(tee -a /var/log/iii-userdata.log) 2>&1
+
+PROJECT="${project_name}"
+REGION="${region}"
+ROLE="caller-worker"
+ARTIFACT_BUCKET="${artifact_bucket}"
+RELEASE="${release}"
+ENGINE_ENDPOINT="${engine_endpoint}"
+
+dnf -y update
+dnf -y install ca-certificates curl unzip jq rsync tar gzip
+
+# Node 20 LTS from AL2023 default repos (S3-backed, no NAT required)
+if ! command -v node >/dev/null 2>&1; then
+  dnf -y install nodejs20 npm
+  alternatives --install /usr/bin/node node /usr/bin/node-20 90 || true
+fi
+
+if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
+  curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
+    -o /tmp/cwagent.rpm
+  rpm -U /tmp/cwagent.rpm
+fi
+
+id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
+install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii
+
+cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
+{
+  "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
+  "logs": { "logs_collected": { "journald": { "logs_collected": [
+    { "unit": "iii-$${ROLE}.service", "log_group_name": "/$${PROJECT}/$${ROLE}", "log_stream_name": "{instance_id}" }
+  ] } } },
+  "metrics": { "metrics_collected": {
+    "mem":  { "measurement": ["mem_used_percent"] },
+    "disk": { "measurement": ["used_percent"], "resources": ["/"] }
+  } }
+}
+JSON
+
+systemctl enable --now amazon-cloudwatch-agent
+amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
+
+mkdir -p "/opt/iii/releases/$${RELEASE}"
+if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/caller-worker.tar.gz" /tmp/cw.tar.gz 2>/dev/null; then
+  tar -xzf /tmp/cw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
+fi
+ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
+chown -R iii:iii /opt/iii
+
+if [ -f /opt/iii/current/package.json ] && [ ! -d /opt/iii/current/node_modules ]; then
+  (cd /opt/iii/current && npm ci --omit=dev)
+  chown -R iii:iii /opt/iii/current/node_modules
+fi
+
+cat >/etc/iii/caller-worker.env <<ENV
+III_ENGINE_URL=$${ENGINE_ENDPOINT}
+III_WORKER_NAME=caller-worker
+III_LOG_LEVEL=info
+ENV
+
+if [ -f /opt/iii/current/systemd/iii-caller-worker.service ]; then
+  install -m 0644 /opt/iii/current/systemd/iii-caller-worker.service /etc/systemd/system/iii-caller-worker.service
+else
+  cat >/etc/systemd/system/iii-caller-worker.service <<'UNIT'
+[Unit]
+Description=iii caller worker (TypeScript)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iii
+Group=iii
+EnvironmentFile=/etc/iii/caller-worker.env
+WorkingDirectory=/opt/iii/current
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/iii /etc/iii
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+fi
+
+systemctl daemon-reload
+systemctl enable iii-caller-worker.service
+systemctl start iii-caller-worker.service || true

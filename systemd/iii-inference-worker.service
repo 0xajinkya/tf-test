@@ -1,0 +1,36 @@
+[Unit]
+Description=iii inference worker (Python)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iii
+Group=iii
+EnvironmentFile=/etc/iii/inference-worker.env
+WorkingDirectory=/opt/iii/current
+ExecStart=/opt/iii/venv/bin/python -m inference_worker
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/log/iii /etc/iii
+PrivateTmp=true
+PrivateDevices=true
+
+CPUQuota=400%
+MemoryMax=6G
+TasksMax=1024
+
+[Install]
+WantedBy=multi-user.target

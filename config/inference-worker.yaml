@@ -1,0 +1,15 @@
+name: inference-worker
+engine_url: ws://ENGINE_PRIVATE_IP:9000
+
+capabilities:
+  - name: inference::run_inference
+    handler: inference_worker.handlers:run_inference
+
+# Backend model selection.
+# In this scaffold the worker runs a deterministic stub. Swap for a real backend:
+#   - llama_cpp: path to GGUF + n_ctx
+#   - openai: passthrough to a remote provider
+#   - vllm: connect to a local vLLM server
+backend:
+  type: stub
+  echo_prefix: "iii-inference-worker:"

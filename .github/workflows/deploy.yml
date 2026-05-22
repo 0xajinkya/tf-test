@@ -1,0 +1,149 @@
+name: deploy
+
+# App-only deployment: build worker bundles, upload to S3,
+# pin /iii/active_release, trigger SSM redeploy on instances.
+#
+# Infra changes are NOT applied here — run `terraform apply` from a workstation
+# (or a separate, more-privileged workflow) after reviewing the plan. The deploy
+# role intentionally lacks broad ec2/iam permissions; see docs/HARDENING.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release SHA to pin (defaults to current SHA)"
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_NAME: iii
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.rel.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: rel
+        run: echo "sha=${{ inputs.release || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build caller-worker
+        run: |
+          cd workers/caller-worker
+          npm install --no-audit --no-fund
+          npm run build
+          tar -czf /tmp/caller-worker.tar.gz dist package.json package-lock.json node_modules
+
+      - name: Package inference-worker
+        run: |
+          cd workers/inference-worker
+          tar -czf /tmp/inference-worker.tar.gz \
+            src requirements.txt pyproject.toml
+
+      - name: Package gateway + engine
+        run: |
+          for role in gateway engine; do
+            stage=/tmp/stage/$role
+            install -d $stage/systemd $stage/bin $stage/config
+            cp systemd/iii-$role.service $stage/systemd/
+            cp config/$role.yaml         $stage/config/
+            tar -czf /tmp/$role.tar.gz -C $stage .
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          path: |
+            /tmp/gateway.tar.gz
+            /tmp/engine.tar.gz
+            /tmp/inference-worker.tar.gz
+            /tmp/caller-worker.tar.gz
+          retention-days: 14
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundles
+          path: bundles
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload bundles to S3
+        run: |
+          REL=${{ needs.build.outputs.release }}
+          BUCKET=${{ vars.ARTIFACT_BUCKET }}
+          for f in bundles/*.tar.gz; do
+            aws s3 cp "$f" "s3://$BUCKET/$REL/$(basename "$f")"
+          done
+
+      - name: Pin release
+        run: |
+          aws ssm put-parameter \
+            --name "/${PROJECT_NAME}/active_release" \
+            --value "${{ needs.build.outputs.release }}" \
+            --type String --overwrite
+
+      - name: Trigger SSM deploy
+        id: ssm
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --document-name "${PROJECT_NAME}-deploy" \
+            --targets "Key=tag:app,Values=iii" \
+            --parameters "release=${{ needs.build.outputs.release }}" \
+            --comment "deploy ${{ needs.build.outputs.release }}" \
+            --query 'Command.CommandId' --output text)
+          echo "command_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "Command ID: $CMD_ID"
+
+      - name: Wait for SSM completion
+        run: |
+          for i in $(seq 1 30); do
+            STATUSES=$(aws ssm list-command-invocations \
+              --command-id "${{ steps.ssm.outputs.command_id }}" \
+              --query 'CommandInvocations[].Status' --output text)
+            echo "statuses: $STATUSES"
+            case "$STATUSES" in
+              *Failed*|*Cancelled*|*TimedOut*) echo "deploy failed"; exit 1 ;;
+            esac
+            if [ -z "$(echo "$STATUSES" | tr -d 'Success \t\n')" ] && [ -n "$STATUSES" ]; then
+              echo "all instances succeeded"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "deploy timed out" >&2
+          exit 1
+
+      - name: Infra reachability check
+        run: |
+          # We verify the gateway VM exists and is reachable. A full /healthz
+          # check requires the iii-http binary (not shipped here — see README
+          # "Known scope limit"). Once binaries are in the bundle, switch back
+          # to `curl -fsS $API/healthz`.
+          IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:app,Values=iii" "Name=tag:role,Values=gateway" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].PublicIpAddress' --output text | head -n1)
+          [ -n "$IP" ] || { echo "no gateway IP found"; exit 1; }
+          echo "gateway public IP: $IP"
+          # TCP-level reachability (covers SG + routing); 7 == couldn't connect.
+          curl -m 5 -o /dev/null -s -w "HTTP %{http_code}\n" "http://$IP/" || true

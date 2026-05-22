@@ -1,0 +1,36 @@
+[Unit]
+Description=iii caller worker (TypeScript)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iii
+Group=iii
+EnvironmentFile=/etc/iii/caller-worker.env
+WorkingDirectory=/opt/iii/current
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/log/iii /etc/iii
+PrivateTmp=true
+PrivateDevices=true
+
+CPUQuota=200%
+MemoryMax=1G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target
