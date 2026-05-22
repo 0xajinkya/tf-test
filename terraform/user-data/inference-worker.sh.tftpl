@@ -13,7 +13,7 @@ GGUF_N_CTX="${gguf_n_ctx}"
 
 dnf -y update
 dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip \
-  python3 python3-pip python3-devel gcc gcc-c++ cmake make
+  python3.11 python3.11-pip python3.11-devel gcc gcc-c++ cmake make
 
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
   curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
@@ -56,7 +56,7 @@ chown -R iii:iii /opt/iii
 
 # Build venv + install deps. llama-cpp-python compiles native code -> slow (~3-5 min on t3.large).
 if [ -f /opt/iii/current/requirements.txt ]; then
-  python3 -m venv /opt/iii/venv
+  python3.11 -m venv /opt/iii/venv
   /opt/iii/venv/bin/pip install --upgrade pip wheel
   /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt
   chown -R iii:iii /opt/iii/venv
