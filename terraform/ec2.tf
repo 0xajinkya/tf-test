@@ -47,7 +47,7 @@ resource "aws_instance" "gateway" {
   }
 
   user_data = templatefile("${path.module}/user-data/gateway.sh.tftpl", merge(local.user_data_common_vars, {
-    engine_endpoint = "ws://${aws_instance.engine.private_ip}:9000"
+    engine_http_endpoint = "http://${aws_instance.engine.private_ip}:3111"
   }))
 
   tags = {
@@ -119,7 +119,9 @@ resource "aws_instance" "inference_worker" {
   }
 
   user_data = templatefile("${path.module}/user-data/inference-worker.sh.tftpl", merge(local.user_data_common_vars, {
-    engine_endpoint = "ws://${aws_instance.engine.private_ip}:9000"
+    engine_endpoint = "ws://${aws_instance.engine.private_ip}:49134"
+    gguf_model_url  = var.gguf_model_url
+    gguf_n_ctx      = var.gguf_n_ctx
   }))
 
   tags = {
@@ -157,7 +159,9 @@ resource "aws_instance" "caller_worker" {
   }
 
   user_data = templatefile("${path.module}/user-data/caller-worker.sh.tftpl", merge(local.user_data_common_vars, {
-    engine_endpoint = "ws://${aws_instance.engine.private_ip}:9000"
+    engine_endpoint       = "ws://${aws_instance.engine.private_ip}:49134"
+    api_keys_ssm_path     = var.api_keys_ssm_path
+    rate_limit_per_minute = var.rate_limit_per_minute
   }))
 
   tags = {

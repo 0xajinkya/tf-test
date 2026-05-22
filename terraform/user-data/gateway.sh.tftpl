@@ -5,52 +5,38 @@ exec > >(tee -a /var/log/iii-userdata.log) 2>&1
 PROJECT="${project_name}"
 REGION="${region}"
 ROLE="gateway"
-ARTIFACT_BUCKET="${artifact_bucket}"
-RELEASE="${release}"
-ENGINE_ENDPOINT="${engine_endpoint}"
+ENGINE_HTTP_ENDPOINT="${engine_http_endpoint}"
 
 dnf -y update
-dnf -y install ca-certificates unzip jq rsync tar gzip python3 python3-pip
-# awscli v2 preinstalled on AL2023.
+dnf -y install ca-certificates curl unzip jq rsync tar gzip nginx
 
+# CloudWatch agent
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
   curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
     -o /tmp/cwagent.rpm
   rpm -U /tmp/cwagent.rpm
 fi
 
-id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
-install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii
+install -d /var/log/iii /etc/iii
 
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
 {
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          {
-            "file_path": "/var/log/iii/$${ROLE}.log",
-            "log_group_name": "/$${PROJECT}/$${ROLE}",
-            "log_stream_name": "{instance_id}",
-            "timezone": "UTC"
-          },
-          {
-            "file_path": "/var/log/iii-userdata.log",
-            "log_group_name": "/$${PROJECT}/userdata",
-            "log_stream_name": "{instance_id}-$${ROLE}",
-            "timezone": "UTC"
-          }
-        ]
-      }
-    }
-  },
-  "metrics": {
-    "metrics_collected": {
-      "mem":  { "measurement": ["mem_used_percent"] },
-      "disk": { "measurement": ["used_percent"], "resources": ["/"] }
-    }
-  }
+  "logs": { "logs_collected": { "files": { "collect_list": [
+    { "file_path": "/var/log/nginx/access.log",
+      "log_group_name": "/$${PROJECT}/$${ROLE}",
+      "log_stream_name": "{instance_id}-access", "timezone": "UTC" },
+    { "file_path": "/var/log/nginx/error.log",
+      "log_group_name": "/$${PROJECT}/$${ROLE}",
+      "log_stream_name": "{instance_id}-error", "timezone": "UTC" },
+    { "file_path": "/var/log/iii-userdata.log",
+      "log_group_name": "/$${PROJECT}/userdata",
+      "log_stream_name": "{instance_id}-$${ROLE}", "timezone": "UTC" }
+  ] } } },
+  "metrics": { "metrics_collected": {
+    "mem":  { "measurement": ["mem_used_percent"] },
+    "disk": { "measurement": ["used_percent"], "resources": ["/"] }
+  } }
 }
 JSON
 
@@ -58,56 +44,40 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
-mkdir -p "/opt/iii/releases/$${RELEASE}"
-if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/gateway.tar.gz" /tmp/gateway.tar.gz 2>/dev/null; then
-  tar -xzf /tmp/gateway.tar.gz -C "/opt/iii/releases/$${RELEASE}"
-fi
-ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
-chown -R iii:iii /opt/iii
+# nginx reverse proxy: public :80 -> engine iii-http :3111
+cat >/etc/nginx/conf.d/iii.conf <<NGINX
+upstream iii_http {
+  server $${ENGINE_HTTP_ENDPOINT#http://};
+  keepalive 32;
+}
 
-cat >/etc/iii/gateway.yaml <<YAML
-listen: 0.0.0.0:80
-engine:
-  url: $${ENGINE_ENDPOINT}
-  reconnect_backoff_ms: 1000
-request_timeout_ms: 30000
-metrics:
-  enabled: true
-  bind: 127.0.0.1:9100
-YAML
+server {
+  listen 80 default_server;
+  server_name _;
 
-if [ -f /opt/iii/current/systemd/iii-gateway.service ]; then
-  install -m 0644 /opt/iii/current/systemd/iii-gateway.service /etc/systemd/system/iii-gateway.service
-else
-  cat >/etc/systemd/system/iii-gateway.service <<'UNIT'
-[Unit]
-Description=iii HTTP gateway
-After=network-online.target
-Wants=network-online.target
+  client_max_body_size 1m;
+  proxy_read_timeout 60s;
+  proxy_connect_timeout 5s;
 
-[Service]
-Type=simple
-User=iii
-Group=iii
-EnvironmentFile=-/etc/iii/gateway.env
-ExecStart=/opt/iii/current/bin/iii-http --config /etc/iii/gateway.yaml
-StandardOutput=append:/var/log/iii/gateway.log
-StandardError=append:/var/log/iii/gateway.log
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/log/iii /etc/iii
-PrivateTmp=true
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+  location = /healthz {
+    return 200 "ok\n";
+    add_header Content-Type text/plain;
+  }
 
-[Install]
-WantedBy=multi-user.target
-UNIT
-fi
+  location / {
+    proxy_pass http://iii_http;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header X-Real-IP \$remote_addr;
+  }
+}
+NGINX
 
-systemctl daemon-reload
-systemctl enable iii-gateway.service
-systemctl start iii-gateway.service || true
+# Our conf.d/iii.conf uses 'default_server' which overrides any default
+# server block in the main nginx.conf, so no edits to nginx.conf required.
+nginx -t
+systemctl enable --now nginx
+systemctl restart nginx

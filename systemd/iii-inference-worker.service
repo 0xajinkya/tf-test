@@ -1,5 +1,5 @@
 [Unit]
-Description=iii inference worker (Python)
+Description=iii inference worker (Python + llama.cpp)
 After=network-online.target
 Wants=network-online.target
 
@@ -10,8 +10,10 @@ Group=iii
 EnvironmentFile=/etc/iii/inference-worker.env
 WorkingDirectory=/opt/iii/current
 ExecStart=/opt/iii/venv/bin/python -m inference_worker
+StandardOutput=append:/var/log/iii/inference-worker.log
+StandardError=append:/var/log/iii/inference-worker.log
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -24,7 +26,7 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-ReadWritePaths=/var/log/iii /etc/iii
+ReadWritePaths=/var/log/iii /etc/iii /var/lib/iii
 PrivateTmp=true
 PrivateDevices=true
 

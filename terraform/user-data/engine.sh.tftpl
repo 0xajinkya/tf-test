@@ -9,9 +9,9 @@ ARTIFACT_BUCKET="${artifact_bucket}"
 RELEASE="${release}"
 
 dnf -y update
-dnf -y install ca-certificates unzip jq rsync tar gzip
-# awscli v2 preinstalled on AL2023; CloudWatch agent installed below.
+dnf -y install ca-certificates curl unzip jq rsync tar gzip
 
+# CloudWatch agent
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
   curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
     -o /tmp/cwagent.rpm
@@ -19,31 +19,32 @@ if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
 fi
 
 id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
-install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii
+install -d -o iii -g iii /opt/iii /var/log/iii /etc/iii /var/lib/iii
 
+# Install iii CLI to /usr/local/bin (script default is per-user; force system path).
+if ! command -v iii >/dev/null 2>&1; then
+  export III_INSTALL_DIR=/usr/local/bin
+  curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+  # Defensive: probe and symlink if script installed elsewhere.
+  if [ ! -x /usr/local/bin/iii ]; then
+    III_BIN=$(find /root /home /opt /usr -maxdepth 5 -name iii -type f -executable 2>/dev/null | head -1)
+    [ -n "$III_BIN" ] && ln -sf "$III_BIN" /usr/local/bin/iii
+  fi
+fi
+/usr/local/bin/iii --version || true
+
+# CloudWatch logs config
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
 {
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          {
-            "file_path": "/var/log/iii/$${ROLE}.log",
-            "log_group_name": "/$${PROJECT}/$${ROLE}",
-            "log_stream_name": "{instance_id}",
-            "timezone": "UTC"
-          },
-          {
-            "file_path": "/var/log/iii-userdata.log",
-            "log_group_name": "/$${PROJECT}/userdata",
-            "log_stream_name": "{instance_id}-$${ROLE}",
-            "timezone": "UTC"
-          }
-        ]
-      }
-    }
-  },
+  "logs": { "logs_collected": { "files": { "collect_list": [
+    { "file_path": "/var/log/iii/$${ROLE}.log",
+      "log_group_name": "/$${PROJECT}/$${ROLE}",
+      "log_stream_name": "{instance_id}", "timezone": "UTC" },
+    { "file_path": "/var/log/iii-userdata.log",
+      "log_group_name": "/$${PROJECT}/userdata",
+      "log_stream_name": "{instance_id}-$${ROLE}", "timezone": "UTC" }
+  ] } } },
   "metrics": { "metrics_collected": {
     "mem":  { "measurement": ["mem_used_percent"] },
     "disk": { "measurement": ["used_percent"], "resources": ["/"] }
@@ -55,28 +56,34 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
-mkdir -p "/opt/iii/releases/$${RELEASE}"
-if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/engine.tar.gz" /tmp/engine.tar.gz 2>/dev/null; then
-  tar -xzf /tmp/engine.tar.gz -C "/opt/iii/releases/$${RELEASE}"
-fi
-ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
-chown -R iii:iii /opt/iii
+# iii engine config: engine on :49134 (WS, all interfaces), iii-http on :3111 (HTTP).
+# file-based adapter — single VM, fine for demo; swap to Redis for HA.
+cat >/etc/iii/engine.yaml <<YAML
+engine:
+  port: 49134
+  host: 0.0.0.0
 
-cat >/etc/iii/engine.yaml <<'YAML'
-listen: 0.0.0.0:9000
+workers:
+  - name: iii-http
+    config:
+      host: 0.0.0.0
+      port: 3111
+
+  - name: iii-state
+    config:
+      adapter: file
+      path: /var/lib/iii/state
+
 observability:
   console: true
   in_memory: true
-auth:
-  mode: trust_network
 YAML
+chown -R iii:iii /etc/iii /var/lib/iii
 
-if [ -f /opt/iii/current/systemd/iii-engine.service ]; then
-  install -m 0644 /opt/iii/current/systemd/iii-engine.service /etc/systemd/system/iii-engine.service
-else
-  cat >/etc/systemd/system/iii-engine.service <<'UNIT'
+# systemd unit
+cat >/etc/systemd/system/iii-engine.service <<'UNIT'
 [Unit]
-Description=iii engine
+Description=iii engine + iii-http
 After=network-online.target
 Wants=network-online.target
 
@@ -84,7 +91,8 @@ Wants=network-online.target
 Type=simple
 User=iii
 Group=iii
-ExecStart=/opt/iii/current/bin/iii-engine --config /etc/iii/engine.yaml
+WorkingDirectory=/var/lib/iii
+ExecStart=/usr/local/bin/iii -c /etc/iii/engine.yaml
 StandardOutput=append:/var/log/iii/engine.log
 StandardError=append:/var/log/iii/engine.log
 Restart=on-failure
@@ -92,14 +100,13 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/iii /etc/iii
+ReadWritePaths=/var/log/iii /etc/iii /var/lib/iii
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-fi
 
 systemctl daemon-reload
 systemctl enable iii-engine.service
-systemctl start iii-engine.service || true
+systemctl start iii-engine.service

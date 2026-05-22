@@ -1,6 +1,6 @@
 # iii Inference Platform on AWS
 
-> **Scope note.** This repo ships the **deployment infrastructure** (AWS via Terraform, systemd units, CI/CD via GitHub Actions) for the iii platform. The upstream `iii-engine` / `iii-http` binaries are **not** bundled — see [Known scope limit](#known-scope-limit--iii-engine--iii-http-binaries) below. The Python `inference-worker` and TypeScript `caller-worker` are real, runnable stubs that speak the engine protocol; their handlers return deterministic echo responses pending real model wiring.
+> Reproducible AWS deployment of the [iii](https://github.com/iii-hq/iii) engine + workers behind a public JSON API. Real llama.cpp inference (TinyLlama 1.1B GGUF by default). API-key auth + per-key rate limit at the caller worker. nginx public ingress, SSM-only admin access, GitHub Actions CI/CD via OIDC.
 
 Reproducible deployment of an iii engine + workers behind a public JSON API on AWS.
 
@@ -59,20 +59,55 @@ docs/             Architecture, API, runbook, hardening, 100x scale
 
 OIDC trust between GitHub and AWS — no long-lived secrets in GitHub.
 
-## Known scope limit — iii engine + iii-http binaries
+## How iii is installed
 
-This repo ships the **deployment infrastructure** for an iii service, not the iii project itself. The `engine.tar.gz` and `gateway.tar.gz` bundles produced by CI contain only the systemd unit + YAML config — they do **not** contain the `iii-engine` or `iii-http` binaries.
-
-To finish wiring a live deployment, drop the upstream binaries (or build them in CI) into the staging directory before tarring:
+The engine VM runs `iii -c /etc/iii/engine.yaml` after installing the CLI in cloud-init:
 
 ```bash
-# in .github/workflows/deploy.yml, "Package gateway + engine" step:
-install -d $stage/bin
-curl -sL https://example.com/iii/v1.2.3/iii-engine -o $stage/bin/iii-engine
-chmod +x $stage/bin/iii-engine
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-The Python `inference-worker` and TypeScript `caller-worker` are real stubs — they connect to the engine, register their capabilities, and serve requests with a deterministic echo handler. Swap the handler bodies for real model inference when you have the engine running.
+That single binary bundles the engine + `iii-http` worker. No upstream binaries are bundled into CI artifacts — cloud-init fetches them at boot.
+
+Workers use the SDKs:
+- Python `iii>=0.11` (`pip install iii`)
+- TypeScript `iii-sdk@^0.11` (`npm install iii-sdk`)
+
+## Request flow
+
+```
+client
+  → nginx :80               (gateway VM, public)
+    → engine :3111 iii-http (engine VM, private)
+      → engine :49134 WS    (in-process)
+        → caller.chat_proxy   (caller-worker VM)
+            auth + rate + log
+            → inference.chat  (inference-worker VM, llama.cpp)
+            ← response
+        ← response
+      ← response
+    ← response
+  ← response
+```
+
+The HTTP path `/v1/chat/completions` is registered as a trigger by the **caller-worker**, not the gateway. nginx just forwards `:80 → engine:3111` so the public surface stays small.
+
+## Auth + rate limit
+
+API keys live in SSM Parameter Store at `/iii/api_keys` (SecureString), comma-separated:
+
+```bash
+aws ssm put-parameter \
+  --name /iii/api_keys --type SecureString --overwrite \
+  --value "key-alpha,key-beta,key-gamma"
+
+# Rotate -> bounce the worker so it re-reads at boot.
+aws ssm send-command --document-name iii-prod-deploy \
+  --targets "Key=tag:role,Values=caller-worker" \
+  --parameters "release=$(git rev-parse HEAD)"
+```
+
+Per-key rate limit defaults to 60 req/min (token bucket). Tune via `var.rate_limit_per_minute`.
 
 ## Docs
 

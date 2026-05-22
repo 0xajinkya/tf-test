@@ -36,6 +36,25 @@ data "aws_iam_policy_document" "vm_inline" {
     actions   = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = [aws_ssm_parameter.active_release.arn]
   }
+  statement {
+    sid       = "ReadAPIKeys"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.api_keys_ssm_path}"]
+  }
+}
+
+# Placeholder API-keys param. Update value out-of-band via:
+#   aws ssm put-parameter --name /iii/api_keys --type SecureString \
+#     --value "key1,key2,key3" --overwrite
+resource "aws_ssm_parameter" "api_keys" {
+  name      = var.api_keys_ssm_path
+  type      = "SecureString"
+  value     = "changeme-rotate-via-cli"
+  overwrite = true
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 resource "aws_iam_role_policy" "vm_inline" {
@@ -138,11 +157,15 @@ resource "aws_ssm_document" "deploy" {
             - "TOKEN=$(curl -sX PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
             - "ROLE=$(curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/tags/instance/role)"
             - "REL={{ release }}"
+            - "if [ \"$ROLE\" = \"gateway\" ]; then systemctl reload nginx || systemctl restart nginx; exit 0; fi"
+            - "if [ \"$ROLE\" = \"engine\" ]; then systemctl restart iii-engine; exit 0; fi"
             - "ART=s3://${aws_s3_bucket.artifacts.id}/$REL/$ROLE.tar.gz"
             - "mkdir -p /opt/iii/releases/$REL"
             - "aws s3 cp $ART /tmp/$ROLE.tar.gz"
             - "tar -xzf /tmp/$ROLE.tar.gz -C /opt/iii/releases/$REL"
             - "ln -sfn /opt/iii/releases/$REL /opt/iii/current"
+            - "if [ \"$ROLE\" = \"caller-worker\" ]; then cd /opt/iii/current && npm install --omit=dev --no-audit --no-fund && chown -R iii:iii node_modules; fi"
+            - "if [ \"$ROLE\" = \"inference-worker\" ]; then /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt; fi"
             - "systemctl daemon-reload"
             - "systemctl restart iii-$ROLE.service"
   DOC

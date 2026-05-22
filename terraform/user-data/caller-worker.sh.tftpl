@@ -8,11 +8,12 @@ ROLE="caller-worker"
 ARTIFACT_BUCKET="${artifact_bucket}"
 RELEASE="${release}"
 ENGINE_ENDPOINT="${engine_endpoint}"
+API_KEYS_SSM_PATH="${api_keys_ssm_path}"
+RATE_LIMIT_PER_MINUTE="${rate_limit_per_minute}"
 
 dnf -y update
-dnf -y install ca-certificates unzip jq rsync tar gzip
+dnf -y install ca-certificates curl unzip jq rsync tar gzip
 
-# Node 20 LTS from AL2023 default repos (S3-backed, no NAT required)
 if ! command -v node >/dev/null 2>&1; then
   dnf -y install nodejs20 npm
   alternatives --install /usr/bin/node node /usr/bin/node-20 90 || true
@@ -30,26 +31,14 @@ install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
 {
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          {
-            "file_path": "/var/log/iii/$${ROLE}.log",
-            "log_group_name": "/$${PROJECT}/$${ROLE}",
-            "log_stream_name": "{instance_id}",
-            "timezone": "UTC"
-          },
-          {
-            "file_path": "/var/log/iii-userdata.log",
-            "log_group_name": "/$${PROJECT}/userdata",
-            "log_stream_name": "{instance_id}-$${ROLE}",
-            "timezone": "UTC"
-          }
-        ]
-      }
-    }
-  },
+  "logs": { "logs_collected": { "files": { "collect_list": [
+    { "file_path": "/var/log/iii/$${ROLE}.log",
+      "log_group_name": "/$${PROJECT}/$${ROLE}",
+      "log_stream_name": "{instance_id}", "timezone": "UTC" },
+    { "file_path": "/var/log/iii-userdata.log",
+      "log_group_name": "/$${PROJECT}/userdata",
+      "log_stream_name": "{instance_id}-$${ROLE}", "timezone": "UTC" }
+  ] } } },
   "metrics": { "metrics_collected": {
     "mem":  { "measurement": ["mem_used_percent"] },
     "disk": { "measurement": ["used_percent"], "resources": ["/"] }
@@ -69,20 +58,26 @@ ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
 chown -R iii:iii /opt/iii
 
 if [ -f /opt/iii/current/package.json ] && [ ! -d /opt/iii/current/node_modules ]; then
-  (cd /opt/iii/current && npm ci --omit=dev)
+  (cd /opt/iii/current && npm install --omit=dev --no-audit --no-fund)
   chown -R iii:iii /opt/iii/current/node_modules
 fi
+
+# Pull API keys from SSM at boot (rotation: redeploy or systemctl restart)
+API_KEYS=$(aws ssm get-parameter --region "$${REGION}" \
+  --name "$${API_KEYS_SSM_PATH}" --with-decryption \
+  --query 'Parameter.Value' --output text 2>/dev/null || echo "")
 
 cat >/etc/iii/caller-worker.env <<ENV
 III_ENGINE_URL=$${ENGINE_ENDPOINT}
 III_WORKER_NAME=caller-worker
 III_LOG_LEVEL=info
+API_KEYS=$${API_KEYS}
+RATE_LIMIT_PER_MINUTE=$${RATE_LIMIT_PER_MINUTE}
 ENV
+chmod 0640 /etc/iii/caller-worker.env
+chown root:iii /etc/iii/caller-worker.env
 
-if [ -f /opt/iii/current/systemd/iii-caller-worker.service ]; then
-  install -m 0644 /opt/iii/current/systemd/iii-caller-worker.service /etc/systemd/system/iii-caller-worker.service
-else
-  cat >/etc/systemd/system/iii-caller-worker.service <<'UNIT'
+cat >/etc/systemd/system/iii-caller-worker.service <<'UNIT'
 [Unit]
 Description=iii caller worker (TypeScript)
 After=network-online.target
@@ -108,7 +103,6 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 UNIT
-fi
 
 systemctl daemon-reload
 systemctl enable iii-caller-worker.service

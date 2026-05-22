@@ -78,3 +78,27 @@ variable "iii_release" {
   type        = string
   default     = "main"
 }
+
+variable "gguf_model_url" {
+  description = "GGUF model download URL for llama.cpp. Default: TinyLlama 1.1B Chat Q4_K_M (~700MB)."
+  type        = string
+  default     = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+}
+
+variable "gguf_n_ctx" {
+  description = "llama.cpp context window."
+  type        = number
+  default     = 2048
+}
+
+variable "api_keys_ssm_path" {
+  description = "SSM Parameter Store path holding comma-separated API keys (SecureString)."
+  type        = string
+  default     = "/iii/api_keys"
+}
+
+variable "rate_limit_per_minute" {
+  description = "Per-API-key requests/min (token bucket)."
+  type        = number
+  default     = 60
+}

@@ -1,98 +1,89 @@
 """iii inference worker.
 
-Connects to the iii engine over WebSocket, registers the
-`inference::run_inference` capability, and serves requests until killed.
-
-The backend is intentionally a stub so the platform deployment can be
-exercised end-to-end without a real model. Swap the body of
-`run_inference` for llama.cpp / vLLM / a remote provider when wiring
-up real inference.
+Registers `inference.chat` with the iii engine. Backend: llama.cpp via
+llama-cpp-python loading a local GGUF. Model path is fixed via env;
+download happens at deploy time in cloud-init.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import signal
 import sys
 import time
 import uuid
 from typing import Any
 
-import websockets
+from iii import III
+from llama_cpp import Llama
 
 LOG = logging.getLogger("inference-worker")
 
-ENGINE_URL = os.environ.get("III_ENGINE_URL", "ws://127.0.0.1:9000")
+ENGINE_URL = os.environ.get("III_ENGINE_URL", "ws://127.0.0.1:49134")
 WORKER_NAME = os.environ.get("III_WORKER_NAME", "inference-worker")
 LOG_LEVEL = os.environ.get("III_LOG_LEVEL", "info").upper()
-RECONNECT_BACKOFF_S = float(os.environ.get("III_RECONNECT_BACKOFF_S", "1.0"))
+MODEL_PATH = os.environ.get("MODEL_PATH", "/var/lib/iii/models/model.gguf")
+N_CTX = int(os.environ.get("MODEL_N_CTX", "2048"))
+N_THREADS = int(os.environ.get("MODEL_N_THREADS", str(os.cpu_count() or 2)))
+
+# Load once at startup, share across invocations.
+_llm: Llama | None = None
 
 
-def _format_completion(model: str, content: str) -> dict[str, Any]:
+def _load_model() -> Llama:
+    global _llm
+    if _llm is None:
+        LOG.info("loading model from %s (n_ctx=%d, threads=%d)", MODEL_PATH, N_CTX, N_THREADS)
+        _llm = Llama(
+            model_path=MODEL_PATH,
+            n_ctx=N_CTX,
+            n_threads=N_THREADS,
+            verbose=False,
+        )
+        LOG.info("model loaded")
+    return _llm
+
+
+async def chat(data: dict[str, Any]) -> dict[str, Any]:
+    """Handler for inference.chat. Input mirrors OpenAI chat-completion."""
+    llm = _load_model()
+    messages = data.get("messages") or []
+    temperature = float(data.get("temperature", 0.7))
+    max_tokens = int(data.get("max_tokens", 256))
+    model_name = data.get("model", WORKER_NAME)
+
+    started = time.time()
+    # llama-cpp-python exposes create_chat_completion; same shape as OpenAI.
+    raw = await asyncio.to_thread(
+        llm.create_chat_completion,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    elapsed_ms = int((time.time() - started) * 1000)
+    LOG.info("inference complete: %dms tokens=%s", elapsed_ms, raw.get("usage"))
+
+    choice = raw["choices"][0]
+    usage = raw.get("usage", {})
     return {
-        "id": f"cmpl-{uuid.uuid4().hex[:24]}",
+        "id": raw.get("id") or f"cmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
-            }
-        ],
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": choice["message"]["role"],
+                "content": choice["message"]["content"],
+            },
+            "finish_reason": choice.get("finish_reason", "stop"),
+        }],
         "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": len(content.split()),
-            "total_tokens": len(content.split()),
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
         },
     }
-
-
-async def run_inference(payload: dict[str, Any]) -> dict[str, Any]:
-    """The capability handler the engine dispatches to."""
-    model = payload.get("model", WORKER_NAME)
-    messages = payload.get("messages") or []
-    last_user = next(
-        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
-        "",
-    )
-    # Stub: echo the user's last message. Replace with real backend.
-    content = f"[{WORKER_NAME}] echo: {last_user}"
-    return _format_completion(model, content)
-
-
-async def _serve(ws: websockets.WebSocketClientProtocol) -> None:
-    await ws.send(json.dumps({
-        "type": "register",
-        "worker": WORKER_NAME,
-        "capabilities": ["inference::run_inference"],
-    }))
-    LOG.info("registered %s with engine", WORKER_NAME)
-
-    async for raw in ws:
-        try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            LOG.warning("invalid JSON from engine: %r", raw[:200])
-            continue
-
-        if msg.get("type") != "invoke":
-            continue
-
-        req_id = msg.get("id")
-        try:
-            result = await run_inference(msg.get("payload") or {})
-            await ws.send(json.dumps({"type": "result", "id": req_id, "payload": result}))
-        except Exception as exc:  # pragma: no cover
-            LOG.exception("handler error")
-            await ws.send(json.dumps({
-                "type": "error",
-                "id": req_id,
-                "error": {"type": "handler_error", "message": str(exc)},
-            }))
 
 
 async def main() -> None:
@@ -102,28 +93,13 @@ async def main() -> None:
         stream=sys.stdout,
     )
 
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+    # Pre-load before connecting so the engine doesn't dispatch to a not-ready worker.
+    _load_model()
 
-    while not stop.is_set():
-        try:
-            LOG.info("connecting to %s", ENGINE_URL)
-            async with websockets.connect(ENGINE_URL, ping_interval=20) as ws:
-                serve_task = asyncio.create_task(_serve(ws))
-                stop_task = asyncio.create_task(stop.wait())
-                done, pending = await asyncio.wait(
-                    [serve_task, stop_task],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for t in pending:
-                    t.cancel()
-        except (OSError, websockets.WebSocketException) as exc:
-            LOG.warning("engine unreachable: %s; retry in %.1fs", exc, RECONNECT_BACKOFF_S)
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=RECONNECT_BACKOFF_S)
-            except asyncio.TimeoutError:
-                continue
+    iii = III(ENGINE_URL)
+    await iii.connect()
+    iii.register_function("inference.chat", chat)
+    LOG.info("registered inference.chat with engine at %s", ENGINE_URL)
 
-    LOG.info("shutdown")
+    # Block forever.
+    await asyncio.Event().wait()

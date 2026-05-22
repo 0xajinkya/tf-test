@@ -1,99 +1,116 @@
 /**
- * iii caller-worker (TypeScript).
+ * iii caller-worker.
  *
- * Connects to the iii engine over WebSocket, registers the `caller::dispatch`
- * capability, and forwards inbound requests to the inference worker through
- * the engine. In the current deployment shape it is a thin pass-through
- * scaffold — replace `dispatch()` with real orchestration logic.
+ * Registers `caller.chat_proxy` and a public HTTP trigger
+ * (POST /v1/chat/completions). Responsibilities:
+ *   1. Validate X-API-Key against allowlist from env (sourced from SSM Parameter Store at boot).
+ *   2. Per-key token-bucket rate limit.
+ *   3. Structured JSON logging of every request to /var/log/iii/caller-worker.log via stdout
+ *      (CloudWatch Agent ships to /iii/caller-worker log group).
+ *   4. Forward to inference.chat via the engine.
  */
-import WebSocket from "ws";
+import { III } from "iii-sdk";
 
-const ENGINE_URL = process.env.III_ENGINE_URL ?? "ws://127.0.0.1:9000";
-const WORKER_NAME = process.env.III_WORKER_NAME ?? "caller-worker";
-const RECONNECT_BACKOFF_MS = Number(process.env.III_RECONNECT_BACKOFF_MS ?? 1000);
+const ENGINE_URL = process.env.III_ENGINE_URL ?? "ws://127.0.0.1:49134";
+const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_PER_MINUTE ?? 60);
+const API_KEYS = new Set(
+  (process.env.API_KEYS ?? "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean),
+);
 
-type InvokeMessage = {
-  type: "invoke";
-  id: string;
-  payload: Record<string, unknown>;
-};
+// ----- token bucket per key -----
+type Bucket = { tokens: number; updatedAt: number };
+const buckets = new Map<string, Bucket>();
+const REFILL_PER_MS = RATE_LIMIT_PER_MIN / 60_000;
 
-export async function dispatch(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return {
-    object: "caller.ack",
-    received_at: new Date().toISOString(),
-    forwarded_keys: Object.keys(payload),
-  };
+function consume(key: string): boolean {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b) {
+    b = { tokens: RATE_LIMIT_PER_MIN, updatedAt: now };
+    buckets.set(key, b);
+  }
+  const elapsed = now - b.updatedAt;
+  b.tokens = Math.min(RATE_LIMIT_PER_MIN, b.tokens + elapsed * REFILL_PER_MS);
+  b.updatedAt = now;
+  if (b.tokens >= 1) {
+    b.tokens -= 1;
+    return true;
+  }
+  return false;
 }
 
-function log(level: "info" | "warn" | "error", msg: string, extra?: Record<string, unknown>) {
-  const line = { ts: new Date().toISOString(), level, worker: WORKER_NAME, msg, ...extra };
-  process.stdout.write(JSON.stringify(line) + "\n");
+// ----- structured log -----
+function log(level: "info" | "warn" | "error", fields: Record<string, unknown>) {
+  process.stdout.write(
+    JSON.stringify({ ts: new Date().toISOString(), level, worker: "caller-worker", ...fields }) + "\n",
+  );
 }
 
-function connectOnce(): Promise<void> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(ENGINE_URL);
+function err(status: number, type: string, message: string) {
+  return { status_code: status, body: { error: { type, message } } };
+}
 
-    ws.on("open", () => {
-      log("info", "connected", { engine: ENGINE_URL });
-      ws.send(JSON.stringify({
-        type: "register",
-        worker: WORKER_NAME,
-        capabilities: ["caller::dispatch"],
-      }));
-    });
+// ----- handler -----
+async function chatProxy(req: any) {
+  const reqId = `req-${Math.random().toString(36).slice(2, 10)}`;
+  const startedAt = Date.now();
+  const headers: Record<string, string> = req?.headers ?? {};
+  const apiKey =
+    headers["x-api-key"] ?? headers["X-API-Key"] ?? headers["X-Api-Key"] ?? "";
+  const body = req?.body ?? {};
 
-    ws.on("message", async (raw) => {
-      let msg: InvokeMessage;
-      try {
-        msg = JSON.parse(raw.toString());
-      } catch {
-        log("warn", "invalid JSON from engine");
-        return;
-      }
-      if (msg.type !== "invoke") return;
-      try {
-        const result = await dispatch(msg.payload ?? {});
-        ws.send(JSON.stringify({ type: "result", id: msg.id, payload: result }));
-      } catch (err) {
-        log("error", "handler error", { err: String(err) });
-        ws.send(JSON.stringify({
-          type: "error",
-          id: msg.id,
-          error: { type: "handler_error", message: String(err) },
-        }));
-      }
-    });
+  if (API_KEYS.size > 0 && !API_KEYS.has(apiKey)) {
+    log("warn", { request_id: reqId, event: "auth_fail", reason: "bad_or_missing_key" });
+    return err(401, "unauthorized", "Missing or invalid X-API-Key");
+  }
+  if (!consume(apiKey || "anon")) {
+    log("warn", { request_id: reqId, event: "rate_limited", api_key_hint: apiKey.slice(0, 4) });
+    return err(429, "rate_limited", `Limit ${RATE_LIMIT_PER_MIN}/min exceeded`);
+  }
+  if (!Array.isArray(body?.messages) || body.messages.length === 0) {
+    return err(400, "invalid_request", "messages must be a non-empty array");
+  }
 
-    ws.on("close", (code) => {
-      log("warn", "connection closed", { code });
-      resolve();
-    });
-
-    ws.on("error", (err) => {
-      log("warn", "ws error", { err: String(err) });
-    });
+  log("info", {
+    request_id: reqId,
+    event: "request",
+    api_key_hint: apiKey.slice(0, 4),
+    model: body.model ?? "inference-worker",
+    msg_count: body.messages.length,
   });
-}
 
-async function main(): Promise<void> {
-  let shutdown = false;
-  for (const sig of ["SIGINT", "SIGTERM"] as const) {
-    process.on(sig, () => {
-      log("info", "shutdown signal", { sig });
-      shutdown = true;
+  try {
+    const result = await iii.invokeFunction("inference.chat", body);
+    log("info", {
+      request_id: reqId,
+      event: "response",
+      latency_ms: Date.now() - startedAt,
+      total_tokens: result?.usage?.total_tokens,
     });
-  }
-  while (!shutdown) {
-    await connectOnce();
-    if (shutdown) break;
-    log("info", `reconnecting in ${RECONNECT_BACKOFF_MS}ms`);
-    await new Promise((r) => setTimeout(r, RECONNECT_BACKOFF_MS));
+    return { status_code: 200, body: result };
+  } catch (e) {
+    log("error", { request_id: reqId, event: "upstream_error", err: String(e) });
+    return err(502, "upstream_error", String(e));
   }
 }
 
-main().catch((err) => {
-  log("error", "fatal", { err: String(err) });
-  process.exit(1);
+// ----- bootstrap -----
+const iii = new III(ENGINE_URL);
+
+iii.registerFunction({ id: "caller.chat_proxy" }, chatProxy);
+
+iii.registerTrigger({
+  type: "http",
+  function_id: "caller.chat_proxy",
+  config: {
+    api_path: "/v1/chat/completions",
+    http_method: "POST",
+  },
 });
+
+log("info", { event: "started", engine: ENGINE_URL, rate_limit: RATE_LIMIT_PER_MIN, key_count: API_KEYS.size });
+
+await new Promise(() => {}); // run forever

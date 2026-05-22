@@ -53,22 +53,12 @@ jobs:
           tar -czf /tmp/inference-worker.tar.gz \
             src requirements.txt pyproject.toml
 
-      - name: Package gateway + engine
-        run: |
-          for role in gateway engine; do
-            stage=/tmp/stage/$role
-            install -d $stage/systemd $stage/bin $stage/config
-            cp systemd/iii-$role.service $stage/systemd/
-            cp config/$role.yaml         $stage/config/
-            tar -czf /tmp/$role.tar.gz -C $stage .
-          done
-
+      # Engine + gateway have no app code -- iii installed via curl in cloud-init,
+      # nginx config baked into user-data. Only worker bundles ship.
       - uses: actions/upload-artifact@v4
         with:
           name: bundles
           path: |
-            /tmp/gateway.tar.gz
-            /tmp/engine.tar.gz
             /tmp/inference-worker.tar.gz
             /tmp/caller-worker.tar.gz
           retention-days: 14
@@ -136,17 +126,21 @@ jobs:
           echo "deploy timed out" >&2
           exit 1
 
-      - name: Infra reachability check
+      - name: Smoke test
         run: |
-          # We verify the gateway VM exists and is reachable. A full /healthz
-          # check requires the iii-http binary (not shipped here — see README
-          # "Known scope limit"). Once binaries are in the bundle, switch back
-          # to `curl -fsS $API/healthz`.
           IP=$(aws ec2 describe-instances \
             --filters "Name=tag:app,Values=iii" "Name=tag:role,Values=gateway" \
                       "Name=instance-state-name,Values=running" \
             --query 'Reservations[].Instances[].PublicIpAddress' --output text | head -n1)
           [ -n "$IP" ] || { echo "no gateway IP found"; exit 1; }
-          echo "gateway public IP: $IP"
-          # TCP-level reachability (covers SG + routing); 7 == couldn't connect.
-          curl -m 5 -o /dev/null -s -w "HTTP %{http_code}\n" "http://$IP/" || true
+          API="http://$IP"
+          echo "smoke: $API/healthz"
+          for i in $(seq 1 30); do
+            if curl -fsS "$API/healthz" >/dev/null 2>&1; then
+              echo "API up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "API never came up" >&2
+          exit 1

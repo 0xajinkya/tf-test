@@ -1,5 +1,5 @@
 [Unit]
-Description=iii engine
+Description=iii engine + iii-http
 After=network-online.target
 Wants=network-online.target
 
@@ -7,8 +7,10 @@ Wants=network-online.target
 Type=simple
 User=iii
 Group=iii
-EnvironmentFile=-/etc/iii/engine.env
-ExecStart=/opt/iii/current/bin/iii-engine --config /etc/iii/engine.yaml
+WorkingDirectory=/var/lib/iii
+ExecStart=/usr/local/bin/iii -c /etc/iii/engine.yaml
+StandardOutput=append:/var/log/iii/engine.log
+StandardError=append:/var/log/iii/engine.log
 Restart=on-failure
 RestartSec=5
 
@@ -23,7 +25,7 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-ReadWritePaths=/var/log/iii /etc/iii
+ReadWritePaths=/var/log/iii /etc/iii /var/lib/iii
 PrivateTmp=true
 PrivateDevices=true
 

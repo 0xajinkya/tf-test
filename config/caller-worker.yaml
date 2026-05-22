@@ -1,6 +1,0 @@
-name: caller-worker
-engine_url: ws://ENGINE_PRIVATE_IP:9000
-
-capabilities:
-  - name: caller::dispatch
-    handler: dist/index.js#dispatch

@@ -8,10 +8,12 @@ ROLE="inference-worker"
 ARTIFACT_BUCKET="${artifact_bucket}"
 RELEASE="${release}"
 ENGINE_ENDPOINT="${engine_endpoint}"
+GGUF_MODEL_URL="${gguf_model_url}"
+GGUF_N_CTX="${gguf_n_ctx}"
 
 dnf -y update
-dnf -y install ca-certificates unzip jq rsync tar gzip \
-  python3 python3-pip gcc gcc-c++ make
+dnf -y install ca-certificates curl unzip jq rsync tar gzip \
+  python3 python3-pip python3-devel gcc gcc-c++ cmake make
 
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
   curl -fsSL "https://s3.$${REGION}.amazonaws.com/amazoncloudwatch-agent-$${REGION}/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" \
@@ -20,31 +22,19 @@ if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
 fi
 
 id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
-install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii
+install -d -o iii -g iii /opt/iii /opt/iii/releases /var/log/iii /etc/iii /var/lib/iii/models
 
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
 {
   "agent": { "metrics_collection_interval": 60, "run_as_user": "root" },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          {
-            "file_path": "/var/log/iii/$${ROLE}.log",
-            "log_group_name": "/$${PROJECT}/$${ROLE}",
-            "log_stream_name": "{instance_id}",
-            "timezone": "UTC"
-          },
-          {
-            "file_path": "/var/log/iii-userdata.log",
-            "log_group_name": "/$${PROJECT}/userdata",
-            "log_stream_name": "{instance_id}-$${ROLE}",
-            "timezone": "UTC"
-          }
-        ]
-      }
-    }
-  },
+  "logs": { "logs_collected": { "files": { "collect_list": [
+    { "file_path": "/var/log/iii/$${ROLE}.log",
+      "log_group_name": "/$${PROJECT}/$${ROLE}",
+      "log_stream_name": "{instance_id}", "timezone": "UTC" },
+    { "file_path": "/var/log/iii-userdata.log",
+      "log_group_name": "/$${PROJECT}/userdata",
+      "log_stream_name": "{instance_id}-$${ROLE}", "timezone": "UTC" }
+  ] } } },
   "metrics": { "metrics_collected": {
     "mem":  { "measurement": ["mem_used_percent"] },
     "disk": { "measurement": ["used_percent"], "resources": ["/"] }
@@ -56,6 +46,7 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
+# Pull worker source from S3 (CI uploads this)
 mkdir -p "/opt/iii/releases/$${RELEASE}"
 if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/inference-worker.tar.gz" /tmp/iw.tar.gz 2>/dev/null; then
   tar -xzf /tmp/iw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
@@ -63,26 +54,36 @@ fi
 ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
 chown -R iii:iii /opt/iii
 
-# Build venv if requirements present
+# Build venv + install deps. llama-cpp-python compiles native code -> slow (~3-5 min on t3.large).
 if [ -f /opt/iii/current/requirements.txt ]; then
   python3 -m venv /opt/iii/venv
-  /opt/iii/venv/bin/pip install --upgrade pip
+  /opt/iii/venv/bin/pip install --upgrade pip wheel
   /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt
   chown -R iii:iii /opt/iii/venv
 fi
 
+# Download GGUF model if not present
+MODEL_PATH=/var/lib/iii/models/model.gguf
+if [ ! -s "$MODEL_PATH" ]; then
+  echo "downloading GGUF: $${GGUF_MODEL_URL}"
+  curl -fL --retry 5 -o "$MODEL_PATH.partial" "$${GGUF_MODEL_URL}"
+  mv "$MODEL_PATH.partial" "$MODEL_PATH"
+fi
+chown -R iii:iii /var/lib/iii/models
+
+# Env file for systemd
 cat >/etc/iii/inference-worker.env <<ENV
 III_ENGINE_URL=$${ENGINE_ENDPOINT}
 III_WORKER_NAME=inference-worker
 III_LOG_LEVEL=info
+MODEL_PATH=$$MODEL_PATH
+MODEL_N_CTX=$${GGUF_N_CTX}
+PYTHONPATH=/opt/iii/current/src
 ENV
 
-if [ -f /opt/iii/current/systemd/iii-inference-worker.service ]; then
-  install -m 0644 /opt/iii/current/systemd/iii-inference-worker.service /etc/systemd/system/iii-inference-worker.service
-else
-  cat >/etc/systemd/system/iii-inference-worker.service <<'UNIT'
+cat >/etc/systemd/system/iii-inference-worker.service <<'UNIT'
 [Unit]
-Description=iii inference worker (Python)
+Description=iii inference worker (Python + llama.cpp)
 After=network-online.target
 Wants=network-online.target
 
@@ -96,17 +97,16 @@ ExecStart=/opt/iii/venv/bin/python -m inference_worker
 StandardOutput=append:/var/log/iii/inference-worker.log
 StandardError=append:/var/log/iii/inference-worker.log
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/iii /etc/iii
+ReadWritePaths=/var/log/iii /etc/iii /var/lib/iii
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-fi
 
 systemctl daemon-reload
 systemctl enable iii-inference-worker.service
