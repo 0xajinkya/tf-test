@@ -19,4 +19,3 @@ instance_types = {
 }
 
 enable_caller_worker = true
-iii_release          = "main"

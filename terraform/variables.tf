@@ -73,12 +73,6 @@ variable "github_environments" {
   default     = ["prod"]
 }
 
-variable "iii_release" {
-  description = "Initial iii release tag baked into cloud-init. Overridden at runtime via SSM /iii/active_release."
-  type        = string
-  default     = "main"
-}
-
 variable "gguf_model_url" {
   description = "GGUF model download URL for llama.cpp. Default: TinyLlama 1.1B Chat Q4_K_M (~700MB)."
   type        = string

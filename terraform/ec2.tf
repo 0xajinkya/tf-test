@@ -17,7 +17,6 @@ locals {
     project_name    = var.project_name
     region          = var.region
     artifact_bucket = aws_s3_bucket.artifacts.id
-    release         = var.iii_release
   }
 }
 

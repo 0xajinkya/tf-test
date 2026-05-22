@@ -5,8 +5,6 @@ exec > >(tee -a /var/log/iii-userdata.log) 2>&1
 PROJECT="${project_name}"
 REGION="${region}"
 ROLE="engine"
-ARTIFACT_BUCKET="${artifact_bucket}"
-RELEASE="${release}"
 
 dnf -y update
 dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip
@@ -21,14 +19,9 @@ fi
 id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
 install -d -o iii -g iii /opt/iii /var/log/iii /etc/iii /var/lib/iii
 
-# Install iii CLI to /usr/local/bin. Two fixes vs the obvious one-liner:
-#  - cloud-init runs root without HOME -> script's `set -eu` aborts on unbound HOME.
-#  - `FOO=bar curl ... | sh` only sets env for curl; the piped sh sees nothing.
-# So: export HOME defensively + pass BIN_DIR on the sh side.
-if ! command -v iii >/dev/null 2>&1; then
-  export HOME=/root
-  curl -fsSL https://install.iii.dev/iii/main/install.sh | BIN_DIR=/usr/local/bin HOME=/root sh
-fi
+# Install iii CLI. BIN_DIR + HOME must be set on the sh side (piped, so curl's
+# env doesn't propagate). HOME is set because cloud-init root has no $HOME.
+curl -fsSL https://install.iii.dev/iii/main/install.sh | BIN_DIR=/usr/local/bin HOME=/root sh
 /usr/local/bin/iii --version
 
 # CloudWatch logs config

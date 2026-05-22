@@ -6,7 +6,6 @@ PROJECT="${project_name}"
 REGION="${region}"
 ROLE="caller-worker"
 ARTIFACT_BUCKET="${artifact_bucket}"
-RELEASE="${release}"
 ENGINE_ENDPOINT="${engine_endpoint}"
 API_KEYS_SSM_PATH="${api_keys_ssm_path}"
 RATE_LIMIT_PER_MINUTE="${rate_limit_per_minute}"
@@ -50,14 +49,18 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
+RELEASE=$(aws ssm get-parameter --region "$${REGION}" \
+  --name "/${project_name}/active_release" --query 'Parameter.Value' --output text)
+echo "active release: $${RELEASE}"
+
 mkdir -p "/opt/iii/releases/$${RELEASE}"
-if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/caller-worker.tar.gz" /tmp/cw.tar.gz 2>/dev/null; then
-  tar -xzf /tmp/cw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
-fi
+aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/caller-worker.tar.gz" /tmp/cw.tar.gz
+tar -xzf /tmp/cw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
 ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
 chown -R iii:iii /opt/iii
 
-if [ -f /opt/iii/current/package.json ] && [ ! -d /opt/iii/current/node_modules ]; then
+# node_modules already in the tarball (deploy.yml packs it). Re-install only if missing.
+if [ ! -d /opt/iii/current/node_modules ]; then
   (cd /opt/iii/current && npm install --omit=dev --no-audit --no-fund)
   chown -R iii:iii /opt/iii/current/node_modules
 fi

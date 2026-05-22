@@ -39,11 +39,12 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
 }
 
 # Active release pointer, written by the deploy workflow.
+# Initial value is a placeholder; the first `deploy.yml` run overwrites it
+# with the real git SHA and the lifecycle block keeps Terraform from reverting.
 resource "aws_ssm_parameter" "active_release" {
-  name      = "/${var.project_name}/active_release"
-  type      = "String"
-  value     = var.iii_release
-  overwrite = true
+  name  = "/${var.project_name}/active_release"
+  type  = "String"
+  value = "pending-first-deploy"
 
   lifecycle {
     ignore_changes = [value]

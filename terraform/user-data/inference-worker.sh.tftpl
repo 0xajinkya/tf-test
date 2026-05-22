@@ -6,7 +6,6 @@ PROJECT="${project_name}"
 REGION="${region}"
 ROLE="inference-worker"
 ARTIFACT_BUCKET="${artifact_bucket}"
-RELEASE="${release}"
 ENGINE_ENDPOINT="${engine_endpoint}"
 GGUF_MODEL_URL="${gguf_model_url}"
 GGUF_N_CTX="${gguf_n_ctx}"
@@ -46,21 +45,22 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
-# Pull worker source from S3 (CI uploads this)
+# Active release (set by deploy.yml's "Pin release" step)
+RELEASE=$(aws ssm get-parameter --region "$${REGION}" \
+  --name "/${project_name}/active_release" --query 'Parameter.Value' --output text)
+echo "active release: $${RELEASE}"
+
 mkdir -p "/opt/iii/releases/$${RELEASE}"
-if aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/inference-worker.tar.gz" /tmp/iw.tar.gz 2>/dev/null; then
-  tar -xzf /tmp/iw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
-fi
+aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/inference-worker.tar.gz" /tmp/iw.tar.gz
+tar -xzf /tmp/iw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
 ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
 chown -R iii:iii /opt/iii
 
 # Build venv + install deps. llama-cpp-python compiles native code -> slow (~3-5 min on t3.large).
-if [ -f /opt/iii/current/requirements.txt ]; then
-  python3.11 -m venv /opt/iii/venv
-  /opt/iii/venv/bin/pip install --upgrade pip wheel
-  /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt
-  chown -R iii:iii /opt/iii/venv
-fi
+python3.11 -m venv /opt/iii/venv
+/opt/iii/venv/bin/pip install --upgrade pip wheel
+/opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt
+chown -R iii:iii /opt/iii/venv
 
 # Download GGUF model if not present
 MODEL_PATH=/var/lib/iii/models/model.gguf
