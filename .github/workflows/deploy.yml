@@ -109,7 +109,7 @@ jobs:
         id: ssm
         run: |
           CMD_ID=$(aws ssm send-command \
-            --document-name "${PROJECT_NAME}-deploy" \
+            --document-name "${{ vars.SSM_DEPLOY_DOCUMENT }}" \
             --targets "Key=tag:app,Values=iii" \
             --parameters "release=${{ needs.build.outputs.release }}" \
             --comment "deploy ${{ needs.build.outputs.release }}" \
