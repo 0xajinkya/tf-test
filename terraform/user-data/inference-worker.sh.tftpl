@@ -12,7 +12,7 @@ GGUF_MODEL_URL="${gguf_model_url}"
 GGUF_N_CTX="${gguf_n_ctx}"
 
 dnf -y update
-dnf -y install ca-certificates curl unzip jq rsync tar gzip \
+dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip \
   python3 python3-pip python3-devel gcc gcc-c++ cmake make
 
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then

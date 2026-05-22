@@ -8,7 +8,7 @@ ROLE="gateway"
 ENGINE_HTTP_ENDPOINT="${engine_http_endpoint}"
 
 dnf -y update
-dnf -y install ca-certificates curl unzip jq rsync tar gzip nginx
+dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip nginx
 
 # CloudWatch agent
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then

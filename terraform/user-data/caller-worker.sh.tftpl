@@ -12,10 +12,10 @@ API_KEYS_SSM_PATH="${api_keys_ssm_path}"
 RATE_LIMIT_PER_MINUTE="${rate_limit_per_minute}"
 
 dnf -y update
-dnf -y install ca-certificates curl unzip jq rsync tar gzip
+dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip
 
 if ! command -v node >/dev/null 2>&1; then
-  dnf -y install nodejs20 npm
+  dnf -y --allowerasing install nodejs20 npm
   alternatives --install /usr/bin/node node /usr/bin/node-20 90 || true
 fi
 

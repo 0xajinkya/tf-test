@@ -9,7 +9,7 @@ ARTIFACT_BUCKET="${artifact_bucket}"
 RELEASE="${release}"
 
 dnf -y update
-dnf -y install ca-certificates curl unzip jq rsync tar gzip
+dnf -y --allowerasing install ca-certificates curl unzip jq rsync tar gzip
 
 # CloudWatch agent
 if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1; then
@@ -21,17 +21,11 @@ fi
 id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
 install -d -o iii -g iii /opt/iii /var/log/iii /etc/iii /var/lib/iii
 
-# Install iii CLI to /usr/local/bin (script default is per-user; force system path).
+# Install iii CLI to /usr/local/bin (script default is $HOME/.local/bin; override via BIN_DIR).
 if ! command -v iii >/dev/null 2>&1; then
-  export III_INSTALL_DIR=/usr/local/bin
-  curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-  # Defensive: probe and symlink if script installed elsewhere.
-  if [ ! -x /usr/local/bin/iii ]; then
-    III_BIN=$(find /root /home /opt /usr -maxdepth 5 -name iii -type f -executable 2>/dev/null | head -1)
-    [ -n "$III_BIN" ] && ln -sf "$III_BIN" /usr/local/bin/iii
-  fi
+  BIN_DIR=/usr/local/bin curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 fi
-/usr/local/bin/iii --version || true
+/usr/local/bin/iii --version
 
 # CloudWatch logs config
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<JSON
