@@ -38,7 +38,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -r requirements.txt pytest ruff
+      # Only deps needed for lint + import-shape tests; skip llama-cpp-python
+      # (native build, slow). Runtime venv on the VM installs the full requirements.
+      - run: pip install "iii-sdk>=0.12,<0.13" pytest ruff
       - run: ruff check src
       - run: PYTHONPATH=src pytest -q
 

@@ -14,8 +14,7 @@ import time
 import uuid
 from typing import Any
 
-from iii import III
-from llama_cpp import Llama
+from iii import register_worker
 
 LOG = logging.getLogger("inference-worker")
 
@@ -26,13 +25,14 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "/var/lib/iii/models/model.gguf")
 N_CTX = int(os.environ.get("MODEL_N_CTX", "2048"))
 N_THREADS = int(os.environ.get("MODEL_N_THREADS", str(os.cpu_count() or 2)))
 
-# Load once at startup, share across invocations.
-_llm: Llama | None = None
+_llm: Any | None = None
 
 
-def _load_model() -> Llama:
+def _load_model() -> Any:
     global _llm
     if _llm is None:
+        # Lazy import keeps llama-cpp-python off the import path in tests/CI.
+        from llama_cpp import Llama
         LOG.info("loading model from %s (n_ctx=%d, threads=%d)", MODEL_PATH, N_CTX, N_THREADS)
         _llm = Llama(
             model_path=MODEL_PATH,
@@ -53,7 +53,6 @@ async def chat(data: dict[str, Any]) -> dict[str, Any]:
     model_name = data.get("model", WORKER_NAME)
 
     started = time.time()
-    # llama-cpp-python exposes create_chat_completion; same shape as OpenAI.
     raw = await asyncio.to_thread(
         llm.create_chat_completion,
         messages=messages,
@@ -93,13 +92,10 @@ async def main() -> None:
         stream=sys.stdout,
     )
 
-    # Pre-load before connecting so the engine doesn't dispatch to a not-ready worker.
     _load_model()
 
-    iii = III(ENGINE_URL)
-    await iii.connect()
+    iii = register_worker(ENGINE_URL)
     iii.register_function("inference.chat", chat)
     LOG.info("registered inference.chat with engine at %s", ENGINE_URL)
 
-    # Block forever.
     await asyncio.Event().wait()

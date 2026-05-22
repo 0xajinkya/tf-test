@@ -3,12 +3,9 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
+  # default_tags in the provider block already applies project + environment to
+  # every resource; per-resource Name tag is added inline.
   name = "${var.project_name}-${var.environment}"
-
-  common_tags = {
-    project     = var.project_name
-    environment = var.environment
-  }
 }
 
 resource "random_id" "artifact_suffix" {
