@@ -21,9 +21,13 @@ fi
 id iii >/dev/null 2>&1 || useradd -r -s /sbin/nologin -d /opt/iii iii
 install -d -o iii -g iii /opt/iii /var/log/iii /etc/iii /var/lib/iii
 
-# Install iii CLI to /usr/local/bin (script default is $HOME/.local/bin; override via BIN_DIR).
+# Install iii CLI to /usr/local/bin. Two fixes vs the obvious one-liner:
+#  - cloud-init runs root without HOME -> script's `set -eu` aborts on unbound HOME.
+#  - `FOO=bar curl ... | sh` only sets env for curl; the piped sh sees nothing.
+# So: export HOME defensively + pass BIN_DIR on the sh side.
 if ! command -v iii >/dev/null 2>&1; then
-  BIN_DIR=/usr/local/bin curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+  export HOME=/root
+  curl -fsSL https://install.iii.dev/iii/main/install.sh | BIN_DIR=/usr/local/bin HOME=/root sh
 fi
 /usr/local/bin/iii --version
 
