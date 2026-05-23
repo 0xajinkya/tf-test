@@ -45,22 +45,27 @@ systemctl enable --now amazon-cloudwatch-agent
 amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s || true
 
-# Active release (set by deploy.yml's "Pin release" step)
+# venv exists before the SSM deploy doc tries to use it. Empty venv is fine;
+# the deploy doc populates it via `pip install -r requirements.txt`.
+python3.11 -m venv /opt/iii/venv
+/opt/iii/venv/bin/pip install --upgrade pip wheel
+chown -R iii:iii /opt/iii/venv
+
+# Pull artifact only if a real release SHA has been pinned. First boot before
+# the initial CI deploy will skip this -- the SSM deploy doc finishes the job.
 RELEASE=$(aws ssm get-parameter --region "$${REGION}" \
   --name "/${project_name}/active_release" --query 'Parameter.Value' --output text)
 echo "active release: $${RELEASE}"
 
-mkdir -p "/opt/iii/releases/$${RELEASE}"
-aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/inference-worker.tar.gz" /tmp/iw.tar.gz
-tar -xzf /tmp/iw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
-ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
-chown -R iii:iii /opt/iii
-
-# Build venv + install deps. llama-cpp-python compiles native code -> slow (~3-5 min on t3.large).
-python3.11 -m venv /opt/iii/venv
-/opt/iii/venv/bin/pip install --upgrade pip wheel
-/opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt
-chown -R iii:iii /opt/iii/venv
+if [ "$${RELEASE}" != "pending-first-deploy" ]; then
+  mkdir -p "/opt/iii/releases/$${RELEASE}"
+  aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/inference-worker.tar.gz" /tmp/iw.tar.gz
+  tar -xzf /tmp/iw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
+  ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
+  chown -R iii:iii /opt/iii
+  /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt
+  chown -R iii:iii /opt/iii/venv
+fi
 
 # Download GGUF model if not present
 MODEL_PATH=/var/lib/iii/models/model.gguf

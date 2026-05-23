@@ -165,7 +165,7 @@ resource "aws_ssm_document" "deploy" {
             - "tar -xzf /tmp/$ROLE.tar.gz -C /opt/iii/releases/$REL"
             - "ln -sfn /opt/iii/releases/$REL /opt/iii/current"
             - "if [ \"$ROLE\" = \"caller-worker\" ]; then cd /opt/iii/current && npm install --omit=dev --no-audit --no-fund && chown -R iii:iii node_modules; fi"
-            - "if [ \"$ROLE\" = \"inference-worker\" ]; then /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt; fi"
+            - "if [ \"$ROLE\" = \"inference-worker\" ]; then [ -x /opt/iii/venv/bin/pip ] || python3.11 -m venv /opt/iii/venv; /opt/iii/venv/bin/pip install --upgrade pip wheel; /opt/iii/venv/bin/pip install -r /opt/iii/current/requirements.txt; chown -R iii:iii /opt/iii/venv; fi"
             - "systemctl daemon-reload"
             - "systemctl restart iii-$ROLE.service"
   DOC

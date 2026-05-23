@@ -57,16 +57,16 @@ RELEASE=$(aws ssm get-parameter --region "$${REGION}" \
   --name "/${project_name}/active_release" --query 'Parameter.Value' --output text)
 echo "active release: $${RELEASE}"
 
-mkdir -p "/opt/iii/releases/$${RELEASE}"
-aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/caller-worker.tar.gz" /tmp/cw.tar.gz
-tar -xzf /tmp/cw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
-ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
-chown -R iii:iii /opt/iii
-
-# node_modules already in the tarball (deploy.yml packs it). Re-install only if missing.
-if [ ! -d /opt/iii/current/node_modules ]; then
-  (cd /opt/iii/current && npm install --omit=dev --no-audit --no-fund)
-  chown -R iii:iii /opt/iii/current/node_modules
+if [ "$${RELEASE}" != "pending-first-deploy" ]; then
+  mkdir -p "/opt/iii/releases/$${RELEASE}"
+  aws s3 cp "s3://$${ARTIFACT_BUCKET}/$${RELEASE}/caller-worker.tar.gz" /tmp/cw.tar.gz
+  tar -xzf /tmp/cw.tar.gz -C "/opt/iii/releases/$${RELEASE}"
+  ln -sfn "/opt/iii/releases/$${RELEASE}" /opt/iii/current
+  chown -R iii:iii /opt/iii
+  if [ ! -d /opt/iii/current/node_modules ]; then
+    (cd /opt/iii/current && npm install --omit=dev --no-audit --no-fund)
+    chown -R iii:iii /opt/iii/current/node_modules
+  fi
 fi
 
 # Pull API keys from SSM at boot (rotation: redeploy or systemctl restart)
