@@ -81,7 +81,7 @@ cat >/etc/iii/inference-worker.env <<ENV
 III_ENGINE_URL=$${ENGINE_ENDPOINT}
 III_WORKER_NAME=inference-worker
 III_LOG_LEVEL=info
-MODEL_PATH=$$MODEL_PATH
+MODEL_PATH=$${MODEL_PATH}
 MODEL_N_CTX=$${GGUF_N_CTX}
 PYTHONPATH=/opt/iii/current/src
 ENV
